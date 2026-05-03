@@ -129,6 +129,21 @@ public extension CombineWrapper where Base: ZilliqaService {
     /// Bridges an async-throwing call into a `Future`-backed publisher whose failure is normalised
     /// to ``Zesame/Error``.
     ///
+    /// **Delivery scheduler:** values and errors are delivered on the **main
+    /// run loop**. The unstructured `Task { … }` below does *not* preserve
+    /// caller actor isolation (it inherits a nonisolated context), so the
+    /// `promise(.success/.failure)` call resumes on the cooperative thread
+    /// pool. Without an explicit hop, every UI consumer downstream would have
+    /// to add `.receive(on: DispatchQueue.main)` themselves *and* remember
+    /// that any `@MainActor`-isolated symbol they touch (e.g., a SwiftUI
+    /// state mutation, a UIKit binding, a `@MainActor` view-model method)
+    /// would trap on Swift 6's runtime isolation check (`_swift_task_check`-
+    /// `IsolatedSwift`) under iOS 26 / Swift 6.2. Hopping back to the main
+    /// run loop here makes the wrapper safe-by-default for the overwhelming
+    /// majority of consumers (UI apps); non-UI consumers pay one extra
+    /// scheduler hop, which is negligible compared to the network round-trip
+    /// the publisher's about to surface.
+    ///
     /// Subscriber cancellation propagates to the underlying `Task`, so subscribers tearing down a
     /// pipeline mid-flight don't leak the in-flight network call.
     private func callAsync<R>(
@@ -149,6 +164,7 @@ public extension CombineWrapper where Base: ZilliqaService {
             })
         }
         .handleEvents(receiveCancel: { box.cancel() })
+        .receive(on: DispatchQueue.main)
         .eraseToAnyPublisher()
     }
 }
